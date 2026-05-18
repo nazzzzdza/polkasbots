@@ -43,6 +43,9 @@ const SUPPORT_CATEGORY_ID = "1505938398291165225";
 
 const STAFF_ROLE_ID = "1500152827337769111";
 
+// ================= LOCK (prevents double click spam) =================
+const creating = new Set();
+
 // ================= READY =================
 client.once("ready", async () => {
   console.log(`READY: ${client.user.tag}`);
@@ -96,7 +99,7 @@ client.on("messageCreate", async (message) => {
 
     const embed = new EmbedBuilder()
       .setTitle("support tickets")
-      .setDescription("⠀·⠀select a category below to open a ticket! ")
+      .setDescription("⠀·⠀select a category below to open a ticket!")
       .setColor(0xffffff);
 
     await message.channel.send({
@@ -115,119 +118,127 @@ client.on("interactionCreate", async (interaction) => {
 
     const type = interaction.values[0];
 
-    // CATEGORY MAP
-    const categoryMap = {
-      basic: BASIC_CATEGORY_ID,
-      modmail: MODMAIL_CATEGORY_ID,
-      custom: CUSTOM_CATEGORY_ID,
-      support: SUPPORT_CATEGORY_ID
-    };
+    // IMPORTANT FIX → prevents "interaction failed"
+    await interaction.deferReply({ ephemeral: true });
 
-    const categoryId = categoryMap[type];
-
-    // CHECK DUPLICATES
-    const { data: existing } = await supabase
-      .from("tickets")
-      .select("*")
-      .eq("user_id", interaction.user.id)
-      .eq("type", type)
-      .eq("open", true)
-      .single();
-
-    if (existing) {
-      const ch = await client.channels.fetch(existing.channel_id).catch(() => null);
-
-      if (ch) {
-        return interaction.reply({
-          content: `you already have an open ticket: ${ch}`,
-          ephemeral: true
-        });
-      }
+    // prevent double click spam
+    if (creating.has(interaction.user.id)) {
+      return interaction.editReply("please wait...");
     }
 
-    // CHANNEL NAME
-    const channelName = `${type}-${interaction.user.username}`
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, "");
+    creating.add(interaction.user.id);
 
-    // CREATE CHANNEL
-    const channel = await interaction.guild.channels.create({
-      name: channelName,
-      type: ChannelType.GuildText,
-      parent: categoryId,
-      permissionOverwrites: [
-        {
-          id: interaction.guild.id,
-          deny: [PermissionsBitField.Flags.ViewChannel]
-        },
-        {
-          id: interaction.user.id,
-          allow: [
-            PermissionsBitField.Flags.ViewChannel,
-            PermissionsBitField.Flags.SendMessages,
-            PermissionsBitField.Flags.ReadMessageHistory
-          ]
-        },
-        {
-          id: STAFF_ROLE_ID,
-          allow: [
-            PermissionsBitField.Flags.ViewChannel,
-            PermissionsBitField.Flags.SendMessages,
-            PermissionsBitField.Flags.ReadMessageHistory
-          ]
-        }
-      ]
-    });
+    try {
+      const categoryMap = {
+        basic: BASIC_CATEGORY_ID,
+        modmail: MODMAIL_CATEGORY_ID,
+        custom: CUSTOM_CATEGORY_ID,
+        support: SUPPORT_CATEGORY_ID
+      };
 
-    // SAVE TO SUPABASE
-    await supabase.from("tickets").insert({
-      user_id: interaction.user.id,
-      channel_id: channel.id,
-      type,
-      open: true
-    });
+      const categoryId = categoryMap[type];
 
-    // CLOSE BUTTON
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("close_ticket")
-        .setLabel("close")
-        .setStyle(ButtonStyle.Secondary)
-    );
+      // SAFE CHECK (no crash)
+      const { data: existing } = await supabase
+        .from("tickets")
+        .select("*")
+        .eq("user_id", interaction.user.id)
+        .eq("type", type)
+        .eq("open", true)
+        .maybeSingle();
 
-    const embed = new EmbedBuilder()
-      .setTitle(`${type} ticket`)
-      .setDescription(`welcome ${interaction.user}\nplease explain your request.`)
-      .setColor(0xffffff);
+      if (existing) {
+        const ch = await client.channels.fetch(existing.channel_id).catch(() => null);
+        creating.delete(interaction.user.id);
 
-    await channel.send({
-      content: `<@&${STAFF_ROLE_ID}>`,
-      embeds: [embed],
-      components: [row]
-    });
+        return interaction.editReply(
+          ch ? `you already have an open ticket: ${ch}` : "ticket already exists."
+        );
+      }
 
-    return interaction.reply({
-      content: `ticket created: ${channel}`,
-      ephemeral: true
-    });
+      const channelName = `${type}-${interaction.user.username}`
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, "");
+
+      const channel = await interaction.guild.channels.create({
+        name: channelName,
+        type: ChannelType.GuildText,
+        parent: categoryId,
+        permissionOverwrites: [
+          {
+            id: interaction.guild.id,
+            deny: [PermissionsBitField.Flags.ViewChannel]
+          },
+          {
+            id: interaction.user.id,
+            allow: [
+              PermissionsBitField.Flags.ViewChannel,
+              PermissionsBitField.Flags.SendMessages,
+              PermissionsBitField.Flags.ReadMessageHistory
+            ]
+          },
+          {
+            id: STAFF_ROLE_ID,
+            allow: [
+              PermissionsBitField.Flags.ViewChannel,
+              PermissionsBitField.Flags.SendMessages,
+              PermissionsBitField.Flags.ReadMessageHistory
+            ]
+          }
+        ]
+      });
+
+      await supabase.from("tickets").insert({
+        user_id: interaction.user.id,
+        channel_id: channel.id,
+        type,
+        open: true
+      });
+
+      const closeBtn = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("close_ticket")
+          .setLabel("close")
+          .setStyle(ButtonStyle.Secondary)
+      );
+
+      const embed = new EmbedBuilder()
+        .setTitle(`${type} ticket`)
+        .setDescription(`welcome ${interaction.user}\nplease explain your request.`)
+        .setColor(0xffffff);
+
+      await channel.send({
+        content: `<@&${STAFF_ROLE_ID}>`,
+        embeds: [embed],
+        components: [closeBtn]
+      });
+
+      creating.delete(interaction.user.id);
+
+      return interaction.editReply(`ticket created: ${channel}`);
+
+    } catch (err) {
+      creating.delete(interaction.user.id);
+      console.error(err);
+      return interaction.editReply("error creating ticket.");
+    }
   }
 
   // ================= CLOSE =================
   if (interaction.isButton()) {
     if (interaction.customId !== "close_ticket") return;
 
+    await interaction.deferReply({ ephemeral: true });
+
     const { data: ticket } = await supabase
       .from("tickets")
       .select("*")
       .eq("channel_id", interaction.channel.id)
       .eq("open", true)
-      .single();
+      .maybeSingle();
 
     if (!ticket) {
-      return interaction.reply({
-        content: "ticket not found.",
-        ephemeral: true
-      });
+      return interaction.editReply("ticket not found.");
     }
 
     await supabase
@@ -235,11 +246,11 @@ client.on("interactionCreate", async (interaction) => {
       .update({ open: false })
       .eq("channel_id", interaction.channel.id);
 
-    await interaction.reply({ content: "closing ticket..." });
+    await interaction.editReply("closing ticket...");
 
-    setTimeout(async () => {
-      await interaction.channel.delete().catch(() => {});
-    }, 3000);
+    setTimeout(() => {
+      interaction.channel.delete().catch(() => {});
+    }, 2500);
   }
 });
 

@@ -224,34 +224,47 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  // ================= CLOSE =================
-  if (interaction.isButton()) {
-    if (interaction.customId !== "close_ticket") return;
+// ================= CLOSE =================
+if (interaction.isButton()) {
+  if (interaction.customId !== "close_ticket") return;
 
-    await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ ephemeral: true });
 
-    const { data: ticket } = await supabase
+  try {
+    // STEP 1: find ticket safely
+    const { data: ticket, error } = await supabase
       .from("tickets")
       .select("*")
       .eq("channel_id", interaction.channel.id)
       .eq("open", true)
       .maybeSingle();
 
+    // STEP 2: if DB fails, still allow close
     if (!ticket) {
-      return interaction.editReply("ticket not found.");
+      console.log("No DB ticket found, still closing channel");
+    } else {
+      await supabase
+        .from("tickets")
+        .update({ open: false })
+        .eq("channel_id", interaction.channel.id);
     }
-
-    await supabase
-      .from("tickets")
-      .update({ open: false })
-      .eq("channel_id", interaction.channel.id);
 
     await interaction.editReply("closing ticket...");
 
     setTimeout(() => {
       interaction.channel.delete().catch(() => {});
-    }, 2500);
+    }, 2000);
+
+  } catch (err) {
+    console.error(err);
+
+    // HARD fallback (never blocks closing)
+    await interaction.editReply("closing ticket...");
+
+    setTimeout(() => {
+      interaction.channel.delete().catch(() => {});
+    }, 2000);
   }
-});
+}
 
 client.login(process.env.TOKEN);

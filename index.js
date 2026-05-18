@@ -266,5 +266,7 @@ if (interaction.isButton()) {
     }, 2000);
   }
 }
+}); 
+
 
 client.login(process.env.TOKEN);
